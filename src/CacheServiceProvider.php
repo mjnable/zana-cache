@@ -21,8 +21,8 @@ final class CacheServiceProvider extends ServiceProvider
             ->singleton(CacheManager::class, static fn (ServiceResolverInterface $r): CacheManager => new CacheManager(
                 $r->get(ConfigurationInterface::class),
                 $r->get(ApplicationInterface::class)->basePath(),
-            ))
-            ->singleton(CacheInterface::class, static fn (ServiceResolverInterface $r): CacheInterface => $r->get(CacheManager::class)->store())
+            ))->uses(ConfigurationInterface::class, ApplicationInterface::class)
+            ->singleton(CacheInterface::class, static fn (ServiceResolverInterface $r): CacheInterface => $r->get(CacheManager::class)->store())->uses(CacheManager::class)
             ->alias(\Psr\SimpleCache\CacheInterface::class, CacheInterface::class);
     }
 
