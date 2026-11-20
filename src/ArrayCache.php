@@ -36,6 +36,13 @@ final class ArrayCache extends AbstractCache
         return [true, unserialize($entry[0])];
     }
 
+    protected function fetchEntry(string $key, int $now): array
+    {
+        [$found, $value] = $this->fetch($key, $now);
+
+        return [$found, $value, $found ? $this->entries[$key][1] : null];
+    }
+
     protected function store(string $key, mixed $value, ?int $expiresAt): bool
     {
         $this->entries[$key] = [serialize($value), $expiresAt];

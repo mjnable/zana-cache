@@ -10,6 +10,10 @@ use Closure;
  * One file per key: the key's SHA-256 under a two-character directory, holding
  * the expiry and the serialized value. Writes are atomic; expired or corrupt
  * files count as misses and are removed.
+ *
+ * add() and increment() (2.26) hold an exclusive lock on the key's ".lock"
+ * file between their read and their write, so processes at the same instant
+ * take turns (S34, S35).
  */
 final class FileCache extends AbstractCache
 {
@@ -32,7 +36,7 @@ final class FileCache extends AbstractCache
     {
         foreach (glob($this->directory . '/[0-9a-f][0-9a-f]', GLOB_ONLYDIR) ?: [] as $bucket) {
             foreach (glob($bucket . '/*') ?: [] as $file) {
-                if (preg_match('/^[0-9a-f]{64}$/', basename($file)) === 1) {
+                if (preg_match('/^[0-9a-f]{64}(\.lock)?$/', basename($file)) === 1) {
                     @unlink($file);
                 }
             }
@@ -40,6 +44,38 @@ final class FileCache extends AbstractCache
         }
 
         return true;
+    }
+
+    protected function atomically(string $key, Closure $operation): mixed
+    {
+        $path = $this->path($key);
+        $directory = dirname($path);
+        if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
+            throw new \RuntimeException("The cache directory {$directory} cannot be created, so the key cannot be locked.");
+        }
+        $lock = @fopen("{$path}.lock", 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            // Never run unlocked: a rate limit or a single-use token would silently stop holding.
+            throw new \RuntimeException("The cache cannot lock {$path}.lock, so the operation cannot be made atomic.");
+        }
+        try {
+            return $operation();
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    protected function fetchEntry(string $key, int $now): array
+    {
+        [$found, $value] = $this->fetch($key, $now);
+        if (!$found) {
+            return [false, null, null];
+        }
+        $contents = @file_get_contents($this->path($key));
+        $entry = $contents === false ? false : @unserialize($contents);
+
+        return [true, $value, is_array($entry) && is_int($entry[0] ?? null) ? $entry[0] : null];
     }
 
     protected function fetch(string $key, int $now): array

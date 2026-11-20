@@ -9,8 +9,10 @@ use Closure;
 /**
  * Key validation, TTL handling and the multiple/remember/pull operations,
  * shared by the built-in stores. Stores implement fetch(), store() and remove().
+ * Since 2.26, add() and increment() too, atomic as far as the store's
+ * atomically() makes them (S34, S35).
  */
-abstract class AbstractCache implements CacheInterface
+abstract class AbstractCache implements AtomicCacheInterface
 {
     private const RESERVED = '{}()/\\@:';
 
@@ -124,6 +126,71 @@ abstract class AbstractCache implements CacheInterface
         $this->remove($key);
 
         return $value;
+    }
+
+    public function add(string $key, mixed $value, null|int|\DateInterval $ttl = null): bool
+    {
+        $this->validate($key);
+        $seconds = $this->seconds($ttl);
+
+        return $this->atomically($key, function () use ($key, $value, $seconds): bool {
+            $now = $this->now();
+            if ($this->fetch($key, $now)[0]) {
+                return false;
+            }
+            if ($seconds !== null && $seconds <= 0) {
+                return true;   // stored and expired at once, as set() does
+            }
+
+            return $this->store($key, $value, $seconds === null ? null : $now + $seconds);
+        });
+    }
+
+    public function increment(string $key, int $by = 1, null|int|\DateInterval $ttl = null): int
+    {
+        $this->validate($key);
+        $seconds = $this->seconds($ttl);
+
+        return $this->atomically($key, function () use ($key, $by, $seconds): int {
+            $now = $this->now();
+            [$found, $value, $expiresAt] = $this->fetchEntry($key, $now);
+            if ($found && is_int($value)) {
+                $this->store($key, $value + $by, $expiresAt);
+
+                return $value + $by;
+            }
+            $this->store($key, $by, $seconds === null ? null : $now + $seconds);
+
+            return $by;
+        });
+    }
+
+    /**
+     * Runs a read and a write on one key so no other process can run between
+     * them (2.26). A store shared between processes overrides it with a lock;
+     * one that lives in a single process needs none.
+     *
+     * @template T
+     * @param \Closure(): T $operation
+     * @return T
+     */
+    protected function atomically(string $key, \Closure $operation): mixed
+    {
+        return $operation();
+    }
+
+    /**
+     * Like fetch(), with the entry's expiry, so increment() keeps it. A store
+     * that cannot tell gives null, and an incremented number then never
+     * expires.
+     *
+     * @return array{bool, mixed, int|null}
+     */
+    protected function fetchEntry(string $key, int $now): array
+    {
+        [$found, $value] = $this->fetch($key, $now);
+
+        return [$found, $value, null];
     }
 
     /**

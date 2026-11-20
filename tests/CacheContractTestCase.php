@@ -6,6 +6,7 @@ namespace Zana\Cache\Tests;
 
 use PHPUnit\Framework\TestCase;
 use Psr\SimpleCache\InvalidArgumentException;
+use Zana\Cache\AtomicCacheInterface;
 use Zana\Cache\CacheInterface;
 
 /**
@@ -15,7 +16,52 @@ abstract class CacheContractTestCase extends TestCase
 {
     protected int $now = 1_000_000;
 
-    abstract protected function cache(?int $defaultTtl = null): CacheInterface;
+    abstract protected function cache(?int $defaultTtl = null): AtomicCacheInterface;
+
+    // ── 2.26: add() and increment() ────────────────────────────────────────
+
+    public function testAddStoresOnlyWhenTheKeyHoldsNothing(): void
+    {
+        $cache = $this->cache();
+        $this->assertInstanceOf(AtomicCacheInterface::class, $cache);
+
+        $this->assertTrue($cache->add('token', 'first', 60));
+        $this->assertFalse($cache->add('token', 'second', 60), 'already held');
+        $this->assertSame('first', $cache->get('token'));
+
+        $cache->set('null', null);
+        $this->assertFalse($cache->add('null', 'x'), 'a stored null is a value');
+
+        $this->now += 61;
+        $this->assertTrue($cache->add('token', 'third', 60), 'an expired value counts as none');
+        $this->assertSame('third', $cache->get('token'));
+
+        $this->assertTrue($cache->add('gone', 'x', 0), 'a TTL of 0 stores and expires at once, as set() does');
+        $this->assertFalse($cache->has('gone'));
+    }
+
+    public function testIncrementCountsAndKeepsTheFirstExpiry(): void
+    {
+        $cache = $this->cache();
+
+        $this->assertSame(1, $cache->increment('hits', 1, 100));
+        $this->assertSame(3, $cache->increment('hits', 2, 100));
+        $this->now += 90;
+        $this->assertSame(4, $cache->increment('hits', 1, 100), 'the TTL is not renewed');
+        $this->now += 11;
+        $this->assertNull($cache->get('hits'), 'expired 100 s after the first increment');
+        $this->assertSame(1, $cache->increment('hits', 1, 100), 'counted afresh');
+
+        $this->assertSame(-1, $cache->increment('down', -1));
+        $cache->set('text', 'abc');
+        $this->assertSame(5, $cache->increment('text', 5), 'a non-integer counts as 0');
+    }
+
+    public function testAddAndIncrementValidateKeys(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->cache()->increment('a:b');
+    }
 
     public function testSetGetHasDelete(): void
     {

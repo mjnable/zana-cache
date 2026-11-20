@@ -3,6 +3,16 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.26.0 — Unreleased
+
+### Added
+
+- `AtomicCacheInterface`, implemented by every store: `add()` stores only when the key holds nothing and says whether it
+  did; `increment()` returns the new count, and an existing count keeps its expiry. Two requests at the same instant
+  cannot both find a key absent, nor both read the same count. `FileCache` holds an exclusive lock on the key's `.lock`
+  file between its read and its write, and throws rather than run unlocked; `clear()` removes the lock files too.
+  `CacheInterface` itself is unchanged.
+
 ## 2.4.0 — 2026-10-26
 
 ### Changed

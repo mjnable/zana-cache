@@ -40,6 +40,10 @@ $this->cache->delete("bmi.report.{$patientId}");
 - **TTL** is seconds or a `DateInterval`. `null` uses the store's default
   (forever unless configured), and a TTL ≤ 0 deletes the entry.
 - **Defaults:** without configuration, the default store is `array`.
+- **Atomic (2.26):** `add($key, $value, $ttl)` stores only when the key holds nothing and says whether it did;
+  `increment($key, $by, $ttl)` returns the new count, and an existing count keeps its expiry. Requests at the same
+  instant take turns: the file store locks the key while it reads and writes. Every store implements
+  `AtomicCacheInterface`; mj-zana/security's rate limits and single-use tokens rely on it.
 
 ## License
 
