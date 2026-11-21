@@ -14,19 +14,46 @@ use Closure;
  * add() and increment() (2.26) hold an exclusive lock on the key's ".lock"
  * file between their read and their write, so processes at the same instant
  * take turns (S34, S35).
+ *
+ * With a key (2.28), every file is signed, and a file is unserialized only
+ * once its signature is checked: unserialize() builds objects, so a file
+ * written by anything but the application could run code. The signature
+ * covers the cache key too, so a file copied to another key's place is
+ * refused. A file that is unsigned, or signed wrongly, is a miss and is
+ * removed, so a cache written before 2.28 simply fills again. Without a key,
+ * files are neither signed nor checked, as before.
  */
 final class FileCache extends AbstractCache
 {
+    public const int MINIMUM_KEY_LENGTH = 32;
+
+    private const string PREFIX = 'zc1.';
+
     private readonly string $directory;
+
+    private readonly ?string $key;
 
     /**
      * @param (Closure(): int)|null $clock
+     * @param string|null $key Signs the files (2.28): at least 32 characters
      */
-    public function __construct(string $directory, ?int $defaultTtl = null, ?Closure $clock = null)
+    public function __construct(string $directory, ?int $defaultTtl = null, ?Closure $clock = null, #[\SensitiveParameter] ?string $key = null)
     {
         parent::__construct($defaultTtl, $clock);
 
+        if ($key !== null && strlen($key) < self::MINIMUM_KEY_LENGTH) {
+            throw new \InvalidArgumentException('The file cache key must be at least ' . self::MINIMUM_KEY_LENGTH . ' characters; generate one with: php -r "echo bin2hex(random_bytes(32));"');
+        }
         $this->directory = rtrim(str_replace('\\', '/', $directory), '/');
+        $this->key = $key;
+    }
+
+    /**
+     * Whether the files are signed.
+     */
+    public function signs(): bool
+    {
+        return $this->key !== null;
     }
 
     /**
@@ -68,39 +95,76 @@ final class FileCache extends AbstractCache
 
     protected function fetchEntry(string $key, int $now): array
     {
-        [$found, $value] = $this->fetch($key, $now);
-        if (!$found) {
-            return [false, null, null];
-        }
-        $contents = @file_get_contents($this->path($key));
-        $entry = $contents === false ? false : @unserialize($contents);
+        $entry = $this->read($key, $now);
 
-        return [true, $value, is_array($entry) && is_int($entry[0] ?? null) ? $entry[0] : null];
+        return $entry === null ? [false, null, null] : [true, $entry[1], $entry[0]];
     }
 
     protected function fetch(string $key, int $now): array
     {
+        $entry = $this->read($key, $now);
+
+        return $entry === null ? [false, null] : [true, $entry[1]];
+    }
+
+    /**
+     * The entry [expiry, value], or null for a miss; a file that is corrupt, expired or not signed as it should be
+     * is removed.
+     *
+     * @return array{0: int|null, 1: mixed}|null
+     */
+    private function read(string $key, int $now): ?array
+    {
         $path = $this->path($key);
         if (!is_file($path)) {
-            return [false, null];
+            return null;
         }
 
         $contents = @file_get_contents($path);
-        $entry = $contents === false ? false : @unserialize($contents);
+        $serialized = $contents === false ? null : $this->open($key, $contents);
+        // Only a file this application signed is unserialized (2.28): building its objects may run their code.
+        $entry = $serialized === null ? false : @unserialize($serialized);
 
         if (!is_array($entry) || !array_key_exists(0, $entry) || !array_key_exists(1, $entry) || !(is_int($entry[0]) || $entry[0] === null)) {
             @unlink($path);
 
-            return [false, null];
+            return null;
         }
 
         if ($entry[0] !== null && $entry[0] <= $now) {
             @unlink($path);
 
-            return [false, null];
+            return null;
         }
 
-        return [true, $entry[1]];
+        return [$entry[0], $entry[1]];
+    }
+
+    /**
+     * The serialized entry inside a file, once its signature is checked; null when it is not signed as it should be.
+     */
+    private function open(string $key, string $contents): ?string
+    {
+        $signed = str_starts_with($contents, self::PREFIX);
+        if ($this->key === null) {
+            return $signed ? null : $contents;   // signed with a key this cache no longer has: a miss
+        }
+        if (!$signed) {
+            return null;
+        }
+        $parts = explode('.', substr($contents, strlen(self::PREFIX)), 2);
+
+        return count($parts) === 2 && hash_equals($this->mac($key, $parts[1]), $parts[0]) ? $parts[1] : null;
+    }
+
+    private function seal(string $key, string $serialized): string
+    {
+        return $this->key === null ? $serialized : self::PREFIX . $this->mac($key, $serialized) . '.' . $serialized;
+    }
+
+    private function mac(string $key, string $serialized): string
+    {
+        return hash_hmac('sha256', $key . "\0" . $serialized, (string) $this->key);
     }
 
     protected function store(string $key, mixed $value, ?int $expiresAt): bool
@@ -112,7 +176,7 @@ final class FileCache extends AbstractCache
         }
 
         $temporary = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
-        if (@file_put_contents($temporary, serialize([$expiresAt, $value])) === false) {
+        if (@file_put_contents($temporary, $this->seal($key, serialize([$expiresAt, $value]))) === false) {
             return false;
         }
 

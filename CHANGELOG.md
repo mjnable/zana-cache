@@ -3,6 +3,20 @@
 All Zana packages share one version number and are released together. A release that did
 not change this package is not listed.
 
+## 2.28.0 — Unreleased
+
+### Security
+
+- The file store signs its files, and unserializes only a file it signed: `unserialize()` builds objects, so a file
+  written to the cache directory by anything but the application could run code (a documented limit until now).
+  The key is `cache.key`, or one derived from `security.secret`, as the queue and outbox derive theirs. The
+  signature covers the cache key too, so a valid file copied to another key's place is refused. A file that is
+  unsigned or signed wrongly is a miss and is removed, so a cache written before 2.28 simply fills again; `add()`
+  and `increment()` read only signed files as well. Without a key, files are neither signed nor checked, as before.
+- `FileCache` takes the key as its new last argument, `key:` (at least 32 characters), and `signs()` says whether
+  it signs. `CacheManager::fileKey()` gives the key the stores use.
+- `check` warns while a file store is not signed (`cache.file_signing`), and reports a `cache.key` too short to use.
+
 ## 2.26.0 — 2026-11-20
 
 ### Added

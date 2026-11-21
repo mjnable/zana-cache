@@ -16,6 +16,9 @@ use Zana\Configuration\ConfigurationInterface;
  *             'request' => ['driver' => 'array'],
  *         ],
  *     ]
+ *
+ * File stores sign their files with cache.key, or a key derived from
+ * security.secret (2.28): see FileCache.
  */
 final class CacheManager
 {
@@ -54,10 +57,25 @@ final class CacheManager
 
         return match ($settings['driver'] ?? null) {
             'array' => new ArrayCache($ttl),
-            'file' => new FileCache($this->path((string) ($settings['path'] ?? 'var/cache/data')), $ttl),
+            'file' => new FileCache($this->path((string) ($settings['path'] ?? 'var/cache/data')), $ttl, key: self::fileKey($this->config)),
             'null' => new NullCache(),
             default => throw new \InvalidArgumentException(sprintf('Cache store "%s" has an unknown driver: %s.', $name, var_export($settings['driver'] ?? null, true))),
         };
+    }
+
+    /**
+     * The key that signs the file stores (2.28): cache.key, else one derived
+     * from security.secret, so one secret signs the cache, the queue and the
+     * outbox apart; else none, and the files are not signed.
+     */
+    public static function fileKey(ConfigurationInterface $config): ?string
+    {
+        if ($config->has('cache.key')) {
+            return $config->string('cache.key');
+        }
+        $secret = $config->has('security.secret') ? $config->string('security.secret') : '';
+
+        return $secret === '' ? null : hash_hmac('sha256', 'zana.cache.file', $secret);
     }
 
     private function path(string $path): string
